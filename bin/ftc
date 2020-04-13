@@ -1,0 +1,148 @@
+#!/usr/bin/env ruby
+
+require 'yaml'
+require 'rest-client'
+require 'optparse'
+require 'apipie-bindings'
+require 'logger'
+require 'parallel'
+
+Options = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca_file) do
+  attr_accessor :debug
+  def self.from_env(env)
+    new.tap do |o|
+      o.members.each do |member|
+        o[member] = env[member.to_s.upcase]
+      end
+    end
+  end
+
+  def validate!
+    errors = []
+
+    members.each do |member|
+      if self[member].nil?
+        cli_opt = "--#{member.to_s.tr('_', '-')}"
+        env_opt = member.to_s.upcase
+        errors << "#{member}, CLI option #{cli_opt} or environment variable #{env_opt}"
+      end
+    end
+
+    errors
+  end
+
+  def api
+    logger = Logger.new(STDERR)
+    logger.level = Logger::ERROR
+    logger.level = Logger::DEBUG if @debug
+
+    ApipieBindings::API.new({ uri: self[:foreman_url],
+                              username: self[:foreman_username],
+                              password: self[:foreman_password],
+                              api_version: 2,
+                              logger: logger },
+                            ssl_ca_file: self[:ssl_ca_file])
+  end
+end
+
+# A Foreman host entry, with associated interfaces
+class ForemanHost
+  attr_reader :host, :interfaces
+
+  # @param host Hash
+  # @param api Apipie::Api
+  def self.query_interfaces(host, api)
+    interfaces = api
+                 .resource(:interfaces)
+                 .call(:index, host_id: host['id'])
+                 .fetch('results')
+
+    new(host, interfaces)
+  end
+
+  def initialize(host, interfaces)
+    @host = host
+    @interfaces = interfaces
+  end
+
+  def managed_interfaces
+    interfaces.select { |entry| entry["managed"] }
+  end
+
+  # @return Array[Hash] All managed interfaces with IP and MAC addresses
+  def configured_interfaces
+    managed_interfaces.select { |entry| entry["ip"] && entry["mac"] }
+  end
+
+  # @return Array[String] All A records assigned to interfaces of this host
+  def a_records
+    configured_interfaces.map { |entry| entry["fqdn"] }.compact
+  end
+end
+
+def host_entries(api)
+  api.resource(:hosts).call(:index)["results"]
+end
+
+def fetch_all(api)
+  host_entries = host_entries(api)
+
+  Parallel.map(host_entries, in_processes: 8) do |host|
+    ForemanHost.query_interfaces(host, api)
+  end
+end
+
+def run(opts)
+  api = opts.api
+  all_hosts = fetch_all(api)
+  all_hosts.flat_map(&:a_records).sort
+end
+
+def parse!(argv)
+  opts = Options.from_env(ENV)
+
+  parser = OptionParser.new do |p|
+    p.banner = "Usage: #{$PROGRAM_NAME} [options]"
+
+    p.on("--help", "Display this help") do
+      puts p
+      exit 0
+    end
+
+    p.on("--debug", "Enable debug level logging") do
+      opts.debug = true
+    end
+
+    p.on("--foreman-username=NAME", "The foreman username, default: env FOREMAN_USERNAME") do |name|
+      opts[:foreman_username] = name
+    end
+
+    p.on("--foreman-password=PASSWORD", "The foreman password, default: env FOREMAN_PASSWORD") do |password|
+      opts[:foreman_password] = password
+    end
+
+    p.on("--foreman-url=NAME", "The foreman base URL, default: env FOREMAN_URL") do |url|
+      opts[:foreman_url] = url
+    end
+
+    p.on("--ssl-ca-file=FILE", "The Foreman CA certificate bundle, default: env SSL_CA_FILE") do |file|
+      opts[:ssl_ca_file] = file
+    end
+  end
+
+  parser.parse!(argv)
+
+  if (errors = opts.validate!).any?
+    warn "Missing configuration: #{errors.inspect}"
+  end
+  opts
+end
+
+def main(argv)
+  opts = parse!(argv)
+  puts YAML.dump run(opts)
+end
+
+if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
+  main(ARGV)
+end
