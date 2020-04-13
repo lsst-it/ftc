@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'yaml'
+require 'toml-rb'
 require 'rest-client'
 require 'optparse'
 require 'apipie-bindings'
@@ -31,7 +32,7 @@ Options = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca
     errors
   end
 
-  def api
+  def to_api
     logger = Logger.new(STDERR)
     logger.level = Logger::ERROR
     logger.level = Logger::DEBUG if @debug
@@ -92,10 +93,37 @@ def fetch_all(api)
   end
 end
 
-def run(opts)
-  api = opts.api
+def a_records(api)
   all_hosts = fetch_all(api)
   all_hosts.flat_map(&:a_records).sort
+end
+
+def ping_config(addresses)
+  targets = addresses.map do |entry|
+    {
+      count: 5,
+      deadline: 5,
+      interval: 1,
+      urls: [entry]
+    }
+  end
+
+  TomlRB.dump(inputs: {ping: targets})
+end
+
+def ping_manifest(s)
+  manifest = {
+    'data' => {
+      'ping.conf' => s
+    }
+  }
+
+  YAML.dump(manifest)
+end
+
+def run(opts)
+  addresses = a_records(opts.to_api)
+  puts ping_manifest(ping_config(addresses))
 end
 
 def parse!(argv)
@@ -140,7 +168,7 @@ end
 
 def main(argv)
   opts = parse!(argv)
-  puts YAML.dump run(opts)
+  run(opts)
 end
 
 if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
