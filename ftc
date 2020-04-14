@@ -8,7 +8,7 @@ require 'apipie-bindings'
 require 'logger'
 require 'parallel'
 
-Options = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca_file) do
+ApiOptions = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca_file) do
   attr_accessor :debug
   def self.from_env(env)
     new.tap do |o|
@@ -46,10 +46,31 @@ Options = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca
   end
 end
 
-# A Foreman host entry, with associated interfaces
+# @summary
+#   A Foreman host entry, with associated interfaces
 class ForemanHost
-  attr_reader :host, :interfaces
+  # @attribute [r] host
+  #   @return [Hash] The Foreman host entry
+  attr_reader :host
 
+  # @attribute [r] interfaces
+  #   @return The Foreman host interfaces
+  attr_reader :interfaces
+
+  # Fetch all host definitions and interfaces
+  #
+  # @param api Apipie::Api
+  def self.all(api)
+    entries = api.resource(:hosts).call(:index)["results"]
+
+    Parallel.map(entries, in_processes: 16) do |host|
+      ForemanHost.query_interfaces(host, api)
+    end
+  end
+
+  # Given a Foreman host entry, fetch the associated interfaces and generate
+  # a new `ForemanHost`.
+  #
   # @param host Hash
   # @param api Apipie::Api
   def self.query_interfaces(host, api)
@@ -66,6 +87,11 @@ class ForemanHost
     @interfaces = interfaces
   end
 
+  # @return [String]
+  def name
+    @host['name']
+  end
+
   def managed_interfaces
     interfaces.select { |entry| entry["managed"] }
   end
@@ -75,59 +101,44 @@ class ForemanHost
     managed_interfaces.select { |entry| entry["ip"] && entry["mac"] }
   end
 
-  # @return Array[String] All A records assigned to interfaces of this host
-  def a_records
+  # @return [Array[String]] All A records assigned to interfaces of this host
+  def fqdns
     configured_interfaces.map { |entry| entry["fqdn"] }.compact
   end
 end
 
-def host_entries(api)
-  api.resource(:hosts).call(:index)["results"]
-end
-
-def fetch_all(api)
-  host_entries = host_entries(api)
-
-  Parallel.map(host_entries, in_processes: 8) do |host|
-    ForemanHost.query_interfaces(host, api)
-  end
-end
-
-def a_records(api)
-  all_hosts = fetch_all(api)
-  all_hosts.flat_map(&:a_records).sort
-end
-
-def ping_config(addresses)
-  targets = addresses.map do |entry|
+def ping_inputs_for_hosts(hosts)
+  targets = hosts.map do |host|
     {
       count: 5,
       deadline: 5,
       interval: 1,
-      urls: [entry]
+      urls: [host.fqdns],
+      tags: {
+        subject: host.name
+      }
     }
   end
 
-  TomlRB.dump(inputs: {ping: targets})
+  TomlRB.dump(inputs: { ping: targets })
 end
 
-def ping_manifest(s)
+def telegraf_configmap(config)
   manifest = {
-    'data' => {
-      'ping.conf' => s
-    }
+    'data' => config
   }
 
   YAML.dump(manifest)
 end
 
 def run(opts)
-  addresses = a_records(opts.to_api)
-  puts ping_manifest(ping_config(addresses))
+  all_hosts = ForemanHost.all(opts.to_api)
+  puts telegraf_configmap(ping: ping_inputs_for_hosts(all_hosts))
 end
 
 def parse!(argv)
-  opts = Options.from_env(ENV)
+  # Set default values from the environment
+  opts = ApiOptions.from_env(ENV)
 
   parser = OptionParser.new do |p|
     p.banner = "Usage: #{$PROGRAM_NAME} [options]"
@@ -158,10 +169,11 @@ def parse!(argv)
     end
   end
 
+  # Populate values from the CLI
   parser.parse!(argv)
 
   if (errors = opts.validate!).any?
-    warn "Missing configuration: #{errors.inspect}"
+    abort "Missing configuration:\n#{errors.map { |e| "  #{e}" }.join("\n")}"
   end
   opts
 end
