@@ -46,7 +46,14 @@ module CLIOptionsMixin
   end
 end
 
-K8sOptions = Struct.new(:k8s_credentials, :k8s_namespace, :k8s_configmap, :k8s_configmap_key) do
+K8sOptions = Struct.new(
+  :k8s_credentials,
+  :k8s_namespace,
+  :k8s_configmap,
+  :k8s_configmap_key,
+  :k8s_deployment,
+  :k8s_volume
+) do
   include CLIOptionsMixin
 
   def to_api
@@ -66,7 +73,12 @@ K8sOptions = Struct.new(:k8s_credentials, :k8s_namespace, :k8s_configmap, :k8s_c
   end
 end
 
-ForemanOptions = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca_file) do
+ForemanOptions = Struct.new(
+  :foreman_username,
+  :foreman_password,
+  :foreman_url,
+  :ssl_ca_file
+) do
   include CLIOptionsMixin
 
   def to_api
@@ -173,6 +185,91 @@ class TelegrafConfigMap
 end
 
 # @summary
+#   A Telegraf deployment and volume definition matching the telegraf configmap
+#
+# Configmaps cannot have recursive directory entries; in order to utilize
+# the `/etc/telegraf.d` directory we need to tweak the deployment volume
+# definition to mount additional files at subpaths.
+class TelegrafDeploymentVolume
+  # @attribute [r] ns
+  #   @return [String] The Kubernetes namespace
+  attr_reader :ns
+
+  # @attribute [r] name
+  #   @return [String] The Telegraf deployment name
+  attr_reader :name
+
+  # @attribute [r] name
+  #   @return [String] The Telegraf deployment volume name
+  attr_reader :volume
+
+  def initialize(api, ns, name, volume)
+    @api = api
+    @ns = ns
+    @name = name
+    @volume = volume
+
+    @_current = nil
+  end
+
+  # @return [Boolean] true if the sync was performed, false otherwise
+  def sync(desired)
+    if insync?(desired)
+      false
+    else
+      sync!(desired)
+      true
+    end
+  end
+
+  # @return [void]
+  def sync!(desired)
+    patch = {
+      spec: {
+        template: {
+          spec: {
+            volumes: [desired]
+          }
+        }
+      }
+    }
+
+    @api
+      .api('apps/v1')
+      .resource('deployments', namespace: @ns)
+      .merge_patch(@name, patch)
+
+    # Refresh the current state
+    fetch!
+  end
+
+  # Is the current deployment content in sync with the desired content?
+  #
+  # @param desired [String] The desired content for the given ns/deployment/key tuple
+  def insync?(desired)
+    current == desired
+  end
+
+  # Generate a diff between the curre
+  def diff(desired)
+    Diffy::Diff.new(current, desired, context: 5).to_s(:color)
+  end
+
+  # Return or fetch the current configmap content
+  # @return [String] The current configmap content
+  def current
+    @_current || fetch!
+  end
+
+  # Fetch and set the current configmap content
+  # @return [String] The current configmap content
+  def fetch!
+    cm = @api.api('apps/v1').resource('deployments', namespace: @ns).get(@name)
+    @_current = cm.spec.template.spec.volumes.map(&:to_h).find { |h| h[:name] == @volume }
+  end
+end
+
+# @summary
 #   A Foreman host entry, with associated interfaces
 class ForemanHost
   # @attribute [r] host
@@ -254,7 +351,7 @@ def gen_config(opts)
   ping_inputs_for_hosts(all_hosts)
 end
 
-def update_config(opts, desired_conf)
+def update_configmap(opts, desired_conf)
   client = opts.k8s.to_api
   tcm = TelegrafConfigMap.new(client,
                               opts.k8s[:k8s_namespace],
@@ -266,9 +363,55 @@ def update_config(opts, desired_conf)
   puts tcm.diff(desired_conf) if !synced
 
   if tcm.sync(desired_conf)
-    puts "Sync performed"
+    puts "ns:#{opts.k8s[:k8s_namespace]}" \
+      ":configmap:#{opts.k8s[:k8s_configmap]}" \
+      ":key:#{opts.k8s[:k8s_configmap_key]}" \
+      ": Sync performed"
     puts "post-sync status: #{tcm.insync?(desired_conf)}"
   end
+end
+
+def update_deployment_volume(opts)
+  client = opts.k8s.to_api
+  tdv = TelegrafDeploymentVolume.new(client,
+                                     opts.k8s[:k8s_namespace],
+                                     opts.k8s[:k8s_deployment],
+                                     opts.k8s[:k8s_volume])
+
+  desired = {
+    name: 'config',
+    configMap: {
+      name: opts.k8s[:k8s_configmap],
+      defaultMode: 420,
+      items: [
+        {
+          key: 'telegraf.conf',
+          path: 'telegraf.conf'
+        },
+        {
+          key: opts.k8s[:k8s_configmap_key],
+          path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
+        }
+      ]
+    }
+  }
+
+  synced = tdv.insync?(desired)
+  puts "k8s volumes insync: #{synced}"
+  puts tdv.diff(desired) if !synced
+
+  if tdv.sync(desired)
+    puts "ns:#{opts.k8s[:k8s_namespace]}" \
+      ":deployment:#{opts.k8s[:k8s_deployment]}" \
+      ":volume:#{opts.k8s[:k8s_volume]}" \
+      ": Sync performed"
+    puts "post-sync status: #{tdv.insync?(desired)}"
+  end
+end
+
+def update_config(opts, desired_conf)
+  update_configmap(opts, desired_conf)
+  update_deployment_volume(opts)
 end
 
 def run(opts)
@@ -322,6 +465,14 @@ def parse!(argv)
 
     p.on("--k8s-configmap-key=KEY", "The Kubernetes configmap key") do |value|
       opts.k8s[:k8s_configmap_key] = value
+    end
+
+    p.on("--k8s-deployment=DEPLOYMENT", "The Kubernetes deployment") do |value|
+      opts.k8s[:k8s_deployment] = value
+    end
+
+    p.on("--k8s-volume=VOLUME", "The Kubernetes deployment volume") do |value|
+      opts.k8s[:k8s_volume] = value
     end
   end
 
