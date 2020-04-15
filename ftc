@@ -239,10 +239,10 @@ def ping_inputs_for_hosts(hosts)
       count: 5,
       deadline: 5,
       interval: 1,
-      urls: [host.fqdns],
-      tags: {
-        subject: host.name
-      }
+      urls: host.fqdns,
+      #tags: {
+      #  subject: host.name
+      #}
     }
   end
 
