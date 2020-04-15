@@ -326,7 +326,7 @@ class ForemanHost
 
   # @return [Array[String]] All A records assigned to interfaces of this host
   def fqdns
-    configured_interfaces.map { |entry| entry["fqdn"] }.compact
+    configured_interfaces.map { |entry| entry["fqdn"] }.compact.sort
   end
 end
 
