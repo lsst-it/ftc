@@ -7,16 +7,29 @@ require 'optparse'
 require 'apipie-bindings'
 require 'logger'
 require 'parallel'
+require 'k8s-client'
+require 'diffy'
 
-ApiOptions = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca_file) do
-  attr_accessor :debug
-  def self.from_env(env)
-    new.tap do |o|
-      o.members.each do |member|
-        o[member] = env[member.to_s.upcase]
+# @summary
+#   Mixin for CLI options structs
+module CLIOptionsMixin
+  # @summary
+  #   Mixin for loading CLI options from the environment
+  module ClassOptions
+    def from_env(env)
+      new.tap do |o|
+        o.members.each do |member|
+          o[member] = env[member.to_s.upcase]
+        end
       end
     end
   end
+
+  def self.included(klass)
+    klass.extend(ClassOptions)
+  end
+
+  attr_accessor :debug
 
   def validate!
     errors = []
@@ -31,6 +44,30 @@ ApiOptions = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl
 
     errors
   end
+end
+
+K8sOptions = Struct.new(:k8s_credentials, :k8s_namespace, :k8s_configmap, :k8s_configmap_key) do
+  include CLIOptionsMixin
+
+  def to_api
+    if @debug
+      K8s::Logging.debug!
+      K8s::Transport.verbose!
+    end
+
+    case self[:k8s_credentials].to_sym
+    when :cluster
+      K8s::Client.in_cluster_config
+    when :config
+      K8s::Client.config(K8s::Config.load_file('~/.kube/config'))
+    else
+      raise "Unknown k8s credentials type #{self[:k8s_credentials]}"
+    end
+  end
+end
+
+ForemanOptions = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl_ca_file) do
+  include CLIOptionsMixin
 
   def to_api
     logger = Logger.new(STDERR)
@@ -43,6 +80,95 @@ ApiOptions = Struct.new(:foreman_username, :foreman_password, :foreman_url, :ssl
                               api_version: 2,
                               logger: logger },
                             ssl_ca_file: self[:ssl_ca_file])
+  end
+end
+
+Options = Struct.new(:foreman, :k8s) do
+  def self.from_env(env)
+    new(ForemanOptions.from_env(env), K8sOptions.from_env(env))
+  end
+
+  def validate!
+    members.flat_map { |member| self[member].validate! }
+  end
+
+  def debug
+    members.map { |member| self[member].debug }.all?
+  end
+
+  def debug=(value)
+    members.map { |member| self[member].debug = value }
+  end
+end
+
+# @summary
+#   The configmap holding the telegraf config file
+class TelegrafConfigMap
+  # @attribute [r] ns
+  #   @return [String] The Kubernetes namespace
+  attr_reader :ns
+
+  # @attribute [r] name
+  #   @return [String] The Telegraf configmap name
+  attr_reader :name
+
+  # @attribute[r] key
+  #   @return [String] The target configmap key
+  attr_reader :key
+
+  def initialize(api, ns, name, key)
+    @api = api
+    @ns = ns
+    @name = name
+    @key = key
+
+    @_current = nil
+  end
+
+  # @return [Boolean] true if the sync was performed, false otherwise
+  def sync(desired)
+    if insync?(desired)
+      false
+    else
+      sync!(desired)
+      true
+    end
+  end
+
+  # @return [void]
+  def sync!(desired)
+    @api
+      .api('v1')
+      .resource('configmaps', namespace: @ns)
+      .merge_patch(@name, data: { @key => desired })
+
+    # Refresh the current state
+    fetch!
+  end
+
+  # Is the current configmap content in sync with the desired content?
+  #
+  # @param desired [String] The desired content for the given ns/configmap/key tuple
+  def insync?(desired)
+    current == desired
+  end
+
+  # Generate a diff between the curre
+  def diff(desired)
+    Diffy::Diff.new(current, desired, context: 5).to_s(:color)
+  end
+
+  # Return or fetch the current configmap content
+  # @return [String] The current configmap content
+  def current
+    @_current || fetch!
+  end
+
+  # Fetch and set the current configmap content
+  # @return [String] The current configmap content
+  def fetch!
+    cm = @api.api('v1').resource('configmaps', namespace: @ns).get(@name)
+    @_current = cm.data[@key]
   end
 end
 
@@ -123,22 +249,36 @@ def ping_inputs_for_hosts(hosts)
   TomlRB.dump(inputs: { ping: targets })
 end
 
-def telegraf_configmap(config)
-  manifest = {
-    'data' => config
-  }
+def gen_config(opts)
+  all_hosts = ForemanHost.all(opts.foreman.to_api)
+  ping_inputs_for_hosts(all_hosts)
+end
 
-  YAML.dump(manifest)
+def update_config(opts, desired_conf)
+  client = opts.k8s.to_api
+  tcm = TelegrafConfigMap.new(client,
+                              opts.k8s[:k8s_namespace],
+                              opts.k8s[:k8s_configmap],
+                              opts.k8s[:k8s_configmap_key])
+
+  synced = tcm.insync?(desired_conf)
+  puts "k8s configmap insync: #{synced}"
+  puts tcm.diff(desired_conf) if !synced
+
+  if tcm.sync(desired_conf)
+    puts "Sync performed"
+    puts "post-sync status: #{tcm.insync?(desired_conf)}"
+  end
 end
 
 def run(opts)
-  all_hosts = ForemanHost.all(opts.to_api)
-  puts telegraf_configmap(ping: ping_inputs_for_hosts(all_hosts))
+  desired_conf = gen_config(opts)
+  update_config(opts, desired_conf)
 end
 
 def parse!(argv)
   # Set default values from the environment
-  opts = ApiOptions.from_env(ENV)
+  opts = Options.from_env(ENV)
 
   parser = OptionParser.new do |p|
     p.banner = "Usage: #{$PROGRAM_NAME} [options]"
@@ -153,19 +293,35 @@ def parse!(argv)
     end
 
     p.on("--foreman-username=NAME", "The foreman username, default: env FOREMAN_USERNAME") do |name|
-      opts[:foreman_username] = name
+      opts.foreman[:foreman_username] = name
     end
 
     p.on("--foreman-password=PASSWORD", "The foreman password, default: env FOREMAN_PASSWORD") do |password|
-      opts[:foreman_password] = password
+      opts.foreman[:foreman_password] = password
     end
 
     p.on("--foreman-url=NAME", "The foreman base URL, default: env FOREMAN_URL") do |url|
-      opts[:foreman_url] = url
+      opts.foreman[:foreman_url] = url
     end
 
     p.on("--ssl-ca-file=FILE", "The Foreman CA certificate bundle, default: env SSL_CA_FILE") do |file|
-      opts[:ssl_ca_file] = file
+      opts.foreman[:ssl_ca_file] = file
+    end
+
+    p.on("--k8s-credentials=CREDENTIALS", "The Kubernetes credentials source") do |value|
+      opts.k8s[:k8s_credentials] = value
+    end
+
+    p.on("--k8s-namespace=NAMESPACE", "The Kubernetes namespace") do |value|
+      opts.k8s[:k8s_namespace] = value
+    end
+
+    p.on("--k8s-configmap=CONFIGMAP", "The Kubernetes configmap") do |value|
+      opts.k8s[:k8s_configmap] = value
+    end
+
+    p.on("--k8s-configmap-key=KEY", "The Kubernetes configmap key") do |value|
+      opts.k8s[:k8s_configmap_key] = value
     end
   end
 
