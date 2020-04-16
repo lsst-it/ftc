@@ -16,6 +16,9 @@ module CLIOptionsMixin
   # @summary
   #   Mixin for loading CLI options from the environment
   module ClassOptions
+    # Load struct options from the environment.
+    #
+    # @param env [Hash] A map of environment variables.
     def from_env(env)
       new.tap do |o|
         o.members.each do |member|
@@ -29,6 +32,8 @@ module CLIOptionsMixin
     klass.extend(ClassOptions)
   end
 
+  # @attribute [r] debug
+  #   @return [Boolean]
   attr_accessor :debug
 
   def validate!
@@ -188,8 +193,14 @@ end
 #   A Telegraf deployment and volume definition matching the telegraf configmap
 #
 # Configmaps cannot have recursive directory entries; in order to utilize
-# the `/etc/telegraf.d` directory we need to tweak the deployment volume
+# the `/etc/telegraf/telegraf.d/` directory we need to tweak the deployment volume
 # definition to mount additional files at subpaths.
+#
+# @note
+#   When a ConfigMap uses explicit paths for files (such as those under `telegraf.d`),
+#   those paths are created as symlinks. Telegraf ignores symlinks by default; as a
+#   workaround run Telegraf with `telegraf --config-directory /etc/telegraf/telegraf.d/`
+#   with the trailing slash.
 class TelegrafDeploymentVolume
   # @attribute [r] ns
   #   @return [String] The Kubernetes namespace
