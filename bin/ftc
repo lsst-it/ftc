@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
 
-require 'yaml'
 require 'toml-rb'
 require 'rest-client'
 require 'optparse'
@@ -135,11 +134,6 @@ Options = Struct.new(:foreman, :k8s) do
   end
 end
 
-def gen_config(opts, formatter)
-  all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
-  formatter.format(all_hosts)
-end
-
 def sync_k8s_object(object, desired)
   synced = object.insync?(desired)
   puts "#{object.description} insync: #{synced}"
@@ -175,17 +169,6 @@ def update_deployment_volume(opts)
     path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
   }
   sync_k8s_object(item, desired)
-end
-
-def update_config(opts, desired_conf)
-  update_configmap(opts, desired_conf)
-  update_deployment_volume(opts)
-end
-
-def run(opts)
-  formatter = opts.to_formatter
-  desired_conf = gen_config(opts, formatter)
-  update_config(opts, desired_conf)
 end
 
 # Parse options from the environment and CLI.
@@ -266,7 +249,12 @@ end
 
 def main(argv)
   opts = parse!(argv)
-  run(opts)
+
+  all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
+
+  formatter = opts.to_formatter
+  update_configmap(opts, formatter.format(all_hosts))
+  update_deployment_volume(opts)
 end
 
 if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
