@@ -68,6 +68,7 @@ GEM
     pry (0.13.0)
       coderay (~> 1.1)
       method_source (~> 1.0)
+    rake (13.0.1)
     recursive-open-struct (1.1.1)
     rest-client (2.1.0)
       http-accept (>= 1.7.0, < 2.0)
@@ -92,6 +93,7 @@ DEPENDENCIES
   k8s-client (~> 0.10.0)
   parallel
   pry
+  rake (~> 13)
   rest-client
   toml-rb
   yajl-ruby

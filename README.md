@@ -23,3 +23,13 @@ Foreman/Telegraf config
 ## Description
 
 Generate and populate Telegraf configs based on foreman hosts.
+
+## Development
+
+### Docker
+
+```
+FTC_VERSION="x.y.z" # substitute with your version
+bundle exec rake docker:build
+docker push lsstit/ftc:"${FTC_VERSION}"
+```
