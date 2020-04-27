@@ -201,27 +201,39 @@ end
 #   those paths are created as symlinks. Telegraf ignores symlinks by default; as a
 #   workaround run Telegraf with `telegraf --config-directory /etc/telegraf/telegraf.d/`
 #   with the trailing slash.
-class TelegrafDeploymentVolume
+class DeploymentVolumeItem
   # @attribute [r] ns
   #   @return [String] The Kubernetes namespace
   attr_reader :ns
 
-  # @attribute [r] name
-  #   @return [String] The Telegraf deployment name
-  attr_reader :name
+  # @attribute [r] deployment
+  #   @return [String] The Telegraf deployment
+  attr_reader :deployment
 
-  # @attribute [r] name
-  #   @return [String] The Telegraf deployment volume name
+  # @attribute [r] volume
+  #   @return [String] The Telegraf volume name
   attr_reader :volume
 
-  def initialize(api, ns, name, volume)
+  # @attribute [r] configmap
+  #   @return [String] The Telegraf configmap to mount
+  attr_reader :configmap
+
+  # @attribute [r] key
+  #   @return [String] The Telegraf configmap key
+  attr_reader :key
+
+  # rubocop:disable Metrics/ParameterLists
+  def initialize(api, ns, deployment, volume, configmap, key)
     @api = api
     @ns = ns
-    @name = name
+    @deployment = deployment
     @volume = volume
+    @configmap = configmap
+    @key = key
 
     @_current = nil
   end
+  # rubocop:enable Metrics/ParameterLists
 
   # @return [Boolean] true if the sync was performed, false otherwise
   def sync(desired)
@@ -233,13 +245,54 @@ class TelegrafDeploymentVolume
     end
   end
 
+  # Synchronize the given configmap volume mount item.
+  # # Examples
+  #
+  # ```
+  # ns = 'telegraf'
+  #
+  # # deployment/telegraf-ping
+  # deploy = 'telegraf-ping'
+  # # default volume name from telegraf chart
+  # volume = 'config'
+  #
+  # # configmap/telegraf-ping
+  # configmap = 'telegraf-ping'
+  # configmap_key = 'ping.conf'
+  #
+  # items = DeploymentVolumeItem.new(api, ns, deploy, volume, configmap, configmap_key)
+  #
+  # items.sync(
+  #   key: 'dns.conf',
+  #   path: 'telegraf.d/dns.conf'
+  # )
+  # ```
+  #
   # @return [void]
   def sync!(desired)
+    # Ensure that the telegraf.conf item is always mounted
+    items = [
+      {
+        key: 'telegraf.conf',
+        path: 'telegraf.conf'
+      },
+      desired
+    ].sort_by { |item| item[:path] }
+
+    cm_volume = {
+      name: @volume,
+      configMap: {
+        name: @configmap,
+        defaultMode: 420,
+        items: items
+      }
+    }
+
     patch = {
       spec: {
         template: {
           spec: {
-            volumes: [desired]
+            volumes: [cm_volume]
           }
         }
       }
@@ -248,7 +301,7 @@ class TelegrafDeploymentVolume
     @api
       .api('apps/v1')
       .resource('deployments', namespace: @ns)
-      .merge_patch(@name, patch)
+      .merge_patch(@deployment, patch)
 
     # Refresh the current state
     fetch!
@@ -275,8 +328,10 @@ class TelegrafDeploymentVolume
   # Fetch and set the current configmap content
   # @return [String] The current configmap content
   def fetch!
-    cm = @api.api('apps/v1').resource('deployments', namespace: @ns).get(@name)
-    @_current = cm.spec.template.spec.volumes.map(&:to_h).find { |h| h[:name] == @volume }
+    cm = @api.api('apps/v1').resource('deployments', namespace: @ns).get(@deployment)
+    volume = cm.spec.template.spec.volumes.map(&:to_h).find { |h| h[:name] == @volume }
+    items = volume.dig(:configMap, :items) || []
+    @_current = items.find { |item| item[:key] == @key }
   end
 end
 
@@ -384,39 +439,28 @@ end
 
 def update_deployment_volume(opts)
   client = opts.k8s.to_api
-  tdv = TelegrafDeploymentVolume.new(client,
-                                     opts.k8s[:k8s_namespace],
-                                     opts.k8s[:k8s_deployment],
-                                     opts.k8s[:k8s_volume])
+  item = DeploymentVolumeItem.new(client,
+                                  opts.k8s[:k8s_namespace],
+                                  opts.k8s[:k8s_deployment],
+                                  opts.k8s[:k8s_volume],
+                                  opts.k8s[:k8s_configmap],
+                                  opts.k8s[:k8s_configmap_key])
 
   desired = {
-    name: 'config',
-    configMap: {
-      name: opts.k8s[:k8s_configmap],
-      defaultMode: 420,
-      items: [
-        {
-          key: 'telegraf.conf',
-          path: 'telegraf.conf'
-        },
-        {
-          key: opts.k8s[:k8s_configmap_key],
-          path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
-        }
-      ]
-    }
+    key: opts.k8s[:k8s_configmap_key],
+    path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
   }
 
-  synced = tdv.insync?(desired)
-  puts "k8s volumes insync: #{synced}"
-  puts tdv.diff(desired) if !synced
+  synced = item.insync?(desired)
+  puts "k8s volume item insync: #{synced}"
+  puts item.diff(desired) if !synced
 
-  if tdv.sync(desired)
+  if item.sync(desired)
     puts "ns:#{opts.k8s[:k8s_namespace]}" \
       ":deployment:#{opts.k8s[:k8s_deployment]}" \
       ":volume:#{opts.k8s[:k8s_volume]}" \
       ": Sync performed"
-    puts "post-sync status: #{tdv.insync?(desired)}"
+    puts "post-sync status: #{item.insync?(desired)}"
   end
 end
 
