@@ -1,3 +1,8 @@
+PATH
+  remote: .
+  specs:
+    ftc (0.1.0)
+
 GEM
   remote: https://rubygems.org/
   specs:
@@ -90,6 +95,7 @@ PLATFORMS
 DEPENDENCIES
   apipie-bindings
   diffy (~> 3.3.0)
+  ftc!
   k8s-client (~> 0.10.0)
   parallel
   pry

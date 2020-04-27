@@ -1,0 +1,268 @@
+#!/usr/bin/env ruby
+
+require 'yaml'
+require 'toml-rb'
+require 'rest-client'
+require 'optparse'
+require 'apipie-bindings'
+require 'logger'
+require 'k8s-client'
+
+require 'ftc'
+
+# @summary
+#   Mixin for CLI options structs
+module CLIOptionsMixin
+  # @summary
+  #   Mixin for loading CLI options from the environment
+  module ClassOptions
+    # Load struct options from the environment.
+    #
+    # @param env [Hash] A map of environment variables.
+    def from_env(env)
+      new.tap do |o|
+        o.members.each do |member|
+          o[member] = env[member.to_s.upcase]
+        end
+      end
+    end
+  end
+
+  def self.included(klass)
+    klass.extend(ClassOptions)
+  end
+
+  # @attribute [r] debug
+  #   @return [Boolean]
+  attr_accessor :debug
+
+  def validate!
+    errors = []
+
+    members.each do |member|
+      if self[member].nil?
+        cli_opt = "--#{member.to_s.tr('_', '-')}"
+        env_opt = member.to_s.upcase
+        errors << "#{member}, CLI option #{cli_opt} or environment variable #{env_opt}"
+      end
+    end
+
+    errors
+  end
+end
+
+K8sOptions = Struct.new(
+  :k8s_credentials,
+  :k8s_namespace,
+  :k8s_configmap,
+  :k8s_configmap_key,
+  :k8s_deployment,
+  :k8s_volume
+) do
+  include CLIOptionsMixin
+
+  def to_api
+    if @debug
+      K8s::Logging.debug!
+      K8s::Transport.verbose!
+    end
+
+    case self[:k8s_credentials].to_sym
+    when :cluster
+      K8s::Client.in_cluster_config
+    when :config
+      K8s::Client.config(K8s::Config.load_file('~/.kube/config'))
+    else
+      raise "Unknown k8s credentials type #{self[:k8s_credentials]}"
+    end
+  end
+end
+
+ForemanOptions = Struct.new(
+  :foreman_username,
+  :foreman_password,
+  :foreman_url,
+  :ssl_ca_file
+) do
+  include CLIOptionsMixin
+
+  def to_api
+    logger = Logger.new(STDERR)
+    logger.level = Logger::ERROR
+    logger.level = Logger::DEBUG if @debug
+
+    ApipieBindings::API.new({ uri: self[:foreman_url],
+                              username: self[:foreman_username],
+                              password: self[:foreman_password],
+                              api_version: 2,
+                              logger: logger },
+                            ssl_ca_file: self[:ssl_ca_file])
+  end
+end
+
+Options = Struct.new(:foreman, :k8s) do
+  def self.from_env(env)
+    new(ForemanOptions.from_env(env), K8sOptions.from_env(env))
+  end
+
+  def validate!
+    members.flat_map { |member| self[member].validate! }
+  end
+
+  def debug
+    members.map { |member| self[member].debug }.all?
+  end
+
+  def debug=(value)
+    members.map { |member| self[member].debug = value }
+  end
+end
+
+def ping_inputs_for_hosts(hosts)
+  targets = hosts.map do |host|
+    {
+      count: 5,
+      deadline: 5,
+      interval: 1,
+      urls: host.fqdns,
+      #tags: {
+      #  subject: host.name
+      #}
+    }
+  end
+
+  TomlRB.dump(inputs: { ping: targets })
+end
+
+def gen_config(opts)
+  all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
+  ping_inputs_for_hosts(all_hosts)
+end
+
+def sync_k8s_object(object, desired)
+  synced = object.insync?(desired)
+  puts "#{object.description} insync: #{synced}"
+  puts object.diff(desired) if !synced
+
+  if object.sync(desired)
+    puts "#{object.description}: sync performed"
+    puts "post-sync status: #{object.insync?(desired)}"
+  end
+end
+
+def update_configmap(opts, desired_conf)
+  client = opts.k8s.to_api
+  tcm = FTC::TelegrafConfigmap.new(client,
+                                   opts.k8s[:k8s_namespace],
+                                   opts.k8s[:k8s_configmap],
+                                   opts.k8s[:k8s_configmap_key])
+
+  sync_k8s_object(tcm, desired_conf)
+end
+
+def update_deployment_volume(opts)
+  client = opts.k8s.to_api
+  item = FTC::DeploymentVolumeItem.new(client,
+                                       opts.k8s[:k8s_namespace],
+                                       opts.k8s[:k8s_deployment],
+                                       opts.k8s[:k8s_volume],
+                                       opts.k8s[:k8s_configmap],
+                                       opts.k8s[:k8s_configmap_key])
+
+  desired = {
+    key: opts.k8s[:k8s_configmap_key],
+    path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
+  }
+  sync_k8s_object(item, desired)
+end
+
+def update_config(opts, desired_conf)
+  update_configmap(opts, desired_conf)
+  update_deployment_volume(opts)
+end
+
+def run(opts)
+  desired_conf = gen_config(opts)
+  update_config(opts, desired_conf)
+end
+
+# Parse options from the environment and CLI.
+#
+# TODO: refactor options handling to reduce the ABC complexity of this method.
+#
+# rubocop:disable Metrics/AbcSize
+def parse!(argv)
+  # Set default values from the environment
+  opts = Options.from_env(ENV)
+
+  parser = OptionParser.new do |p|
+    p.banner = "Usage: #{$PROGRAM_NAME} [options]"
+
+    p.on("--help", "Display this help") do
+      puts p
+      exit 0
+    end
+
+    p.on("--debug", "Enable debug level logging") do
+      opts.debug = true
+    end
+
+    p.on("--foreman-username=NAME", "The foreman username, default: env FOREMAN_USERNAME") do |name|
+      opts.foreman[:foreman_username] = name
+    end
+
+    p.on("--foreman-password=PASSWORD", "The foreman password, default: env FOREMAN_PASSWORD") do |password|
+      opts.foreman[:foreman_password] = password
+    end
+
+    p.on("--foreman-url=NAME", "The foreman base URL, default: env FOREMAN_URL") do |url|
+      opts.foreman[:foreman_url] = url
+    end
+
+    p.on("--ssl-ca-file=FILE", "The Foreman CA certificate bundle, default: env SSL_CA_FILE") do |file|
+      opts.foreman[:ssl_ca_file] = file
+    end
+
+    p.on("--k8s-credentials=CREDENTIALS", "The Kubernetes credentials source") do |value|
+      opts.k8s[:k8s_credentials] = value
+    end
+
+    p.on("--k8s-namespace=NAMESPACE", "The Kubernetes namespace") do |value|
+      opts.k8s[:k8s_namespace] = value
+    end
+
+    p.on("--k8s-configmap=CONFIGMAP", "The Kubernetes configmap") do |value|
+      opts.k8s[:k8s_configmap] = value
+    end
+
+    p.on("--k8s-configmap-key=KEY", "The Kubernetes configmap key") do |value|
+      opts.k8s[:k8s_configmap_key] = value
+    end
+
+    p.on("--k8s-deployment=DEPLOYMENT", "The Kubernetes deployment") do |value|
+      opts.k8s[:k8s_deployment] = value
+    end
+
+    p.on("--k8s-volume=VOLUME", "The Kubernetes deployment volume") do |value|
+      opts.k8s[:k8s_volume] = value
+    end
+  end
+
+  # Populate values from the CLI
+  parser.parse!(argv)
+
+  if (errors = opts.validate!).any?
+    abort "Missing configuration:\n#{errors.map { |e| "  #{e}" }.join("\n")}"
+  end
+  opts
+end
+# rubocop:enable Metrics/AbcSize
+
+def main(argv)
+  opts = parse!(argv)
+  run(opts)
+end
+
+if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
+  main(ARGV)
+end
