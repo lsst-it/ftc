@@ -142,6 +142,11 @@ class TelegrafConfigMap
     @_current = nil
   end
 
+  # @return [String]
+  def description
+    "ns=#{@ns} configmap/#{@name} key=#{@key}"
+  end
+
   # @return [Boolean] true if the sync was performed, false otherwise
   def sync(desired)
     if insync?(desired)
@@ -234,6 +239,11 @@ class DeploymentVolumeItem
     @_current = nil
   end
   # rubocop:enable Metrics/ParameterLists
+
+  # @return [String]
+  def description
+    "#{@ns} deploy/#{@deployment} volume/#{@volume}/cm/#{@configmap} key=#{@key}"
+  end
 
   # @return [Boolean] true if the sync was performed, false otherwise
   def sync(desired)
@@ -417,6 +427,17 @@ def gen_config(opts)
   ping_inputs_for_hosts(all_hosts)
 end
 
+def sync_k8s_object(object, desired)
+  synced = object.insync?(desired)
+  puts "k8s volume item insync: #{synced}"
+  puts object.diff(desired) if !synced
+
+  if object.sync(desired)
+    puts "#{object.description}: sync performed"
+    puts "post-sync status: #{object.insync?(desired)}"
+  end
+end
+
 def update_configmap(opts, desired_conf)
   client = opts.k8s.to_api
   tcm = TelegrafConfigMap.new(client,
@@ -424,17 +445,7 @@ def update_configmap(opts, desired_conf)
                               opts.k8s[:k8s_configmap],
                               opts.k8s[:k8s_configmap_key])
 
-  synced = tcm.insync?(desired_conf)
-  puts "k8s configmap insync: #{synced}"
-  puts tcm.diff(desired_conf) if !synced
-
-  if tcm.sync(desired_conf)
-    puts "ns:#{opts.k8s[:k8s_namespace]}" \
-      ":configmap:#{opts.k8s[:k8s_configmap]}" \
-      ":key:#{opts.k8s[:k8s_configmap_key]}" \
-      ": Sync performed"
-    puts "post-sync status: #{tcm.insync?(desired_conf)}"
-  end
+  sync_k8s_object(tcm, desired_conf)
 end
 
 def update_deployment_volume(opts)
@@ -450,18 +461,7 @@ def update_deployment_volume(opts)
     key: opts.k8s[:k8s_configmap_key],
     path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
   }
-
-  synced = item.insync?(desired)
-  puts "k8s volume item insync: #{synced}"
-  puts item.diff(desired) if !synced
-
-  if item.sync(desired)
-    puts "ns:#{opts.k8s[:k8s_namespace]}" \
-      ":deployment:#{opts.k8s[:k8s_deployment]}" \
-      ":volume:#{opts.k8s[:k8s_volume]}" \
-      ": Sync performed"
-    puts "post-sync status: #{item.insync?(desired)}"
-  end
+  sync_k8s_object(item, desired)
 end
 
 def update_config(opts, desired_conf)
