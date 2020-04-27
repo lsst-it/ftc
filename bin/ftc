@@ -116,27 +116,28 @@ Options = Struct.new(:foreman, :k8s) do
   def debug=(value)
     members.map { |member| self[member].debug = value }
   end
-end
 
-def ping_inputs_for_hosts(hosts)
-  targets = hosts.map do |host|
-    {
-      count: 5,
-      deadline: 5,
-      interval: 1,
-      urls: host.fqdns,
-      #tags: {
-      #  subject: host.name
-      #}
-    }
+  def formatter
+    @formatter ||= "ping"
   end
 
-  TomlRB.dump(inputs: { ping: targets })
+  attr_writer :formatter
+
+  def to_formatter
+    case formatter
+    when "ping"
+      FTC::Formatter::Ping.new
+    when "dns_forward"
+      FTC::Formatter::DNSForward.new(servers: ['139.229.135.53'])
+    else
+      raise ArgumentError, "Unknown formatter type #{formatter}"
+    end
+  end
 end
 
-def gen_config(opts)
+def gen_config(opts, formatter)
   all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
-  ping_inputs_for_hosts(all_hosts)
+  formatter.format(all_hosts)
 end
 
 def sync_k8s_object(object, desired)
@@ -182,7 +183,8 @@ def update_config(opts, desired_conf)
 end
 
 def run(opts)
-  desired_conf = gen_config(opts)
+  formatter = opts.to_formatter
+  desired_conf = gen_config(opts, formatter)
   update_config(opts, desired_conf)
 end
 
@@ -245,6 +247,10 @@ def parse!(argv)
 
     p.on("--k8s-volume=VOLUME", "The Kubernetes deployment volume") do |value|
       opts.k8s[:k8s_volume] = value
+    end
+
+    p.on("--formatter=FORMATTER", "The telegraf config formatter") do |value|
+      opts.formatter = value
     end
   end
 

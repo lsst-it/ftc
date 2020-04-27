@@ -6,4 +6,5 @@ module FTC
   require 'ftc/foreman_host'
   require 'ftc/deployment_volume_item'
   require 'ftc/telegraf_configmap'
+  require 'ftc/formatter'
 end
