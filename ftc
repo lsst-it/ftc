@@ -261,7 +261,7 @@ class TelegrafDeploymentVolume
     current == desired
   end
 
-  # Generate a diff between the curre
+  # Generate a diff between the current and desired telegraf deployment volume.
   def diff(desired)
     Diffy::Diff.new(current, desired, context: 5).to_s(:color)
   end
@@ -430,6 +430,11 @@ def run(opts)
   update_config(opts, desired_conf)
 end
 
+# Parse options from the environment and CLI.
+#
+# TODO: refactor options handling to reduce the ABC complexity of this method.
+#
+# rubocop:disable Metrics/AbcSize
 def parse!(argv)
   # Set default values from the environment
   opts = Options.from_env(ENV)
@@ -495,6 +500,7 @@ def parse!(argv)
   end
   opts
 end
+# rubocop:enable Metrics/AbcSize
 
 def main(argv)
   opts = parse!(argv)
