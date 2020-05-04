@@ -25,6 +25,20 @@ module CLIOptionsMixin
         end
       end
     end
+
+    # Mark a list of struct members as optional
+    def attr_optional(*members)
+      optional_members.concat(members.flatten).tap(&:uniq!)
+    end
+
+    # @return [Set]
+    def optional_members
+      @_optional_members ||= []
+    end
+
+    def required_members
+      self.members - optional_members
+    end
   end
 
   def self.included(klass)
@@ -38,7 +52,7 @@ module CLIOptionsMixin
   def validate!
     errors = []
 
-    members.each do |member|
+    self.class.required_members.each do |member|
       if self[member].nil?
         cli_opt = "--#{member.to_s.tr('_', '-')}"
         env_opt = member.to_s.upcase
@@ -99,9 +113,38 @@ ForemanOptions = Struct.new(
   end
 end
 
-Options = Struct.new(:foreman, :k8s) do
+FormatterOptions = Struct.new(
+  :formatter_name,
+  :formatter_options
+) do
+  include CLIOptionsMixin
+
+  attr_optional :formatter_options
+
+  def to_formatter
+    case self[:formatter_name]
+    when "ping"
+      FTC::Formatter::Ping.new
+    when "dns_forward"
+      FTC::Formatter::DNSForward.new(**parsed_options)
+    else
+      raise ArgumentError, "Unknown formatter type #{self[:formatter_name]}"
+    end
+  end
+
+  private
+
+  def parsed_options
+    JSON.parse(self[:formatter_options], symbolize_names: true)
+  end
+end
+
+Options = Struct.new(:foreman, :k8s, :formatter) do
   def self.from_env(env)
-    new(ForemanOptions.from_env(env), K8sOptions.from_env(env))
+    inner = [ForemanOptions, K8sOptions, FormatterOptions].map do |klass|
+      klass.from_env(env)
+    end
+    new(*inner)
   end
 
   def validate!
@@ -114,30 +157,6 @@ Options = Struct.new(:foreman, :k8s) do
 
   def debug=(value)
     members.map { |member| self[member].debug = value }
-  end
-
-  attr_writer :formatter_name
-  def formatter_name
-    @formatter_name ||= "ping"
-  end
-
-  def formatter_options=(str)
-    @formatter_options = JSON.parse(str, symbolize_names: true)
-  end
-
-  def formatter_options
-    @formatter_options ||= {}
-  end
-
-  def to_formatter
-    case formatter_name
-    when "ping"
-      FTC::Formatter::Ping.new
-    when "dns_forward"
-      FTC::Formatter::DNSForward.new(**formatter_options)
-    else
-      raise ArgumentError, "Unknown formatter type #{formatter_name}"
-    end
   end
 end
 
@@ -182,7 +201,7 @@ end
 #
 # TODO: refactor options handling to reduce the ABC complexity of this method.
 #
-# rubocop:disable Metrics/AbcSize
+# rubocop:disable Metrics/AbcSize, Metrics/MethodLength
 def parse!(argv)
   # Set default values from the environment
   opts = Options.from_env(ENV)
@@ -240,11 +259,11 @@ def parse!(argv)
     end
 
     p.on("--formatter-name=FORMATTER", "The telegraf config formatter") do |value|
-      opts.formatter_name = value
+      opts.formatter[:formatter_name] = value
     end
 
     p.on("--formatter-options=FORMATTER", "The telegraf config formatter options") do |value|
-      opts.formatter_options = value
+      opts.formatter[:formatter_options] = value
     end
   end
 
@@ -256,14 +275,14 @@ def parse!(argv)
   end
   opts
 end
-# rubocop:enable Metrics/AbcSize
+# rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
 def main(argv)
   opts = parse!(argv)
 
   all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
 
-  formatter = opts.to_formatter
+  formatter = opts.formatter.to_formatter
   update_configmap(opts, formatter.format(all_hosts))
   update_deployment_volume(opts)
 end
