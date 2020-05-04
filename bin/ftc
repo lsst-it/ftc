@@ -9,6 +9,99 @@ require 'k8s-client'
 
 require 'ftc'
 
+def main(argv)
+  opts = parse!(argv)
+
+  all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
+
+  formatter = opts.formatter.to_formatter
+  should_redeploy = false
+  should_redeploy ||= update_configmap(opts, formatter.format(all_hosts))
+  should_redeploy ||= update_deployment_volume(opts)
+
+  redeploy(opts) if should_redeploy
+end
+
+# Parse options from the environment and CLI.
+#
+# TODO: refactor options handling to reduce the ABC complexity of this method.
+#
+# rubocop:disable Metrics/AbcSize, Metrics/MethodLength
+def parse!(argv)
+  # Set default values from the environment
+  opts = Options.from_env(ENV)
+
+  parser = OptionParser.new do |p|
+    p.banner = "Usage: #{$PROGRAM_NAME} [options]"
+
+    p.on("--help", "Display this help") do
+      puts p
+      exit 0
+    end
+
+    p.on("--debug", "Enable debug level logging") do
+      opts.debug = true
+    end
+
+    p.on("--foreman-username=NAME", "The foreman username, default: env FOREMAN_USERNAME") do |name|
+      opts.foreman[:foreman_username] = name
+    end
+
+    p.on("--foreman-password=PASSWORD", "The foreman password, default: env FOREMAN_PASSWORD") do |password|
+      opts.foreman[:foreman_password] = password
+    end
+
+    p.on("--foreman-url=NAME", "The foreman base URL, default: env FOREMAN_URL") do |url|
+      opts.foreman[:foreman_url] = url
+    end
+
+    p.on("--ssl-ca-file=FILE", "The Foreman CA certificate bundle, default: env SSL_CA_FILE") do |file|
+      opts.foreman[:ssl_ca_file] = file
+    end
+
+    p.on("--k8s-credentials=CREDENTIALS", "The Kubernetes credentials source") do |value|
+      opts.k8s[:k8s_credentials] = value
+    end
+
+    p.on("--k8s-namespace=NAMESPACE", "The Kubernetes namespace") do |value|
+      opts.k8s[:k8s_namespace] = value
+    end
+
+    p.on("--k8s-configmap=CONFIGMAP", "The Kubernetes configmap") do |value|
+      opts.k8s[:k8s_configmap] = value
+    end
+
+    p.on("--k8s-configmap-key=KEY", "The Kubernetes configmap key") do |value|
+      opts.k8s[:k8s_configmap_key] = value
+    end
+
+    p.on("--k8s-deployment=DEPLOYMENT", "The Kubernetes deployment") do |value|
+      opts.k8s[:k8s_deployment] = value
+    end
+
+    p.on("--k8s-volume=VOLUME", "The Kubernetes deployment volume") do |value|
+      opts.k8s[:k8s_volume] = value
+    end
+
+    p.on("--formatter-name=FORMATTER", "The telegraf config formatter") do |value|
+      opts.formatter[:formatter_name] = value
+    end
+
+    p.on("--formatter-options=FORMATTER", "The telegraf config formatter options") do |value|
+      opts.formatter[:formatter_options] = value
+    end
+  end
+
+  # Populate values from the CLI
+  parser.parse!(argv)
+
+  if (errors = opts.validate!).any?
+    abort "Missing configuration:\n#{errors.map { |e| "  #{e}" }.join("\n")}"
+  end
+  opts
+end
+# rubocop:enable Metrics/AbcSize, Metrics/MethodLength
+
 # @summary
 #   Mixin for CLI options structs
 module CLIOptionsMixin
@@ -209,99 +302,6 @@ def redeploy(opts)
     .api('apps/v1')
     .resource('deployments', namespace: opts[:k8s][:k8s_namespace])
     .merge_patch(opts[:k8s][:k8s_deployment], patch)
-end
-
-# Parse options from the environment and CLI.
-#
-# TODO: refactor options handling to reduce the ABC complexity of this method.
-#
-# rubocop:disable Metrics/AbcSize, Metrics/MethodLength
-def parse!(argv)
-  # Set default values from the environment
-  opts = Options.from_env(ENV)
-
-  parser = OptionParser.new do |p|
-    p.banner = "Usage: #{$PROGRAM_NAME} [options]"
-
-    p.on("--help", "Display this help") do
-      puts p
-      exit 0
-    end
-
-    p.on("--debug", "Enable debug level logging") do
-      opts.debug = true
-    end
-
-    p.on("--foreman-username=NAME", "The foreman username, default: env FOREMAN_USERNAME") do |name|
-      opts.foreman[:foreman_username] = name
-    end
-
-    p.on("--foreman-password=PASSWORD", "The foreman password, default: env FOREMAN_PASSWORD") do |password|
-      opts.foreman[:foreman_password] = password
-    end
-
-    p.on("--foreman-url=NAME", "The foreman base URL, default: env FOREMAN_URL") do |url|
-      opts.foreman[:foreman_url] = url
-    end
-
-    p.on("--ssl-ca-file=FILE", "The Foreman CA certificate bundle, default: env SSL_CA_FILE") do |file|
-      opts.foreman[:ssl_ca_file] = file
-    end
-
-    p.on("--k8s-credentials=CREDENTIALS", "The Kubernetes credentials source") do |value|
-      opts.k8s[:k8s_credentials] = value
-    end
-
-    p.on("--k8s-namespace=NAMESPACE", "The Kubernetes namespace") do |value|
-      opts.k8s[:k8s_namespace] = value
-    end
-
-    p.on("--k8s-configmap=CONFIGMAP", "The Kubernetes configmap") do |value|
-      opts.k8s[:k8s_configmap] = value
-    end
-
-    p.on("--k8s-configmap-key=KEY", "The Kubernetes configmap key") do |value|
-      opts.k8s[:k8s_configmap_key] = value
-    end
-
-    p.on("--k8s-deployment=DEPLOYMENT", "The Kubernetes deployment") do |value|
-      opts.k8s[:k8s_deployment] = value
-    end
-
-    p.on("--k8s-volume=VOLUME", "The Kubernetes deployment volume") do |value|
-      opts.k8s[:k8s_volume] = value
-    end
-
-    p.on("--formatter-name=FORMATTER", "The telegraf config formatter") do |value|
-      opts.formatter[:formatter_name] = value
-    end
-
-    p.on("--formatter-options=FORMATTER", "The telegraf config formatter options") do |value|
-      opts.formatter[:formatter_options] = value
-    end
-  end
-
-  # Populate values from the CLI
-  parser.parse!(argv)
-
-  if (errors = opts.validate!).any?
-    abort "Missing configuration:\n#{errors.map { |e| "  #{e}" }.join("\n")}"
-  end
-  opts
-end
-# rubocop:enable Metrics/AbcSize, Metrics/MethodLength
-
-def main(argv)
-  opts = parse!(argv)
-
-  all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
-
-  formatter = opts.formatter.to_formatter
-  should_redeploy = false
-  should_redeploy ||= update_configmap(opts, formatter.format(all_hosts))
-  should_redeploy ||= update_deployment_volume(opts)
-
-  redeploy(opts) if should_redeploy
 end
 
 if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
