@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name        = 'ftc'
-  s.version     = '0.4.0'
+  s.version     = '0.5.0'
   s.licenses    = ['Apache-2.0']
   s.authors     = ['LSST IT']
   s.summary     = "Generate Telegraf configurations from Foreman hosts"

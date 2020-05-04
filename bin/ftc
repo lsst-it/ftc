@@ -186,6 +186,31 @@ def update_deployment_volume(opts)
   item.sync(desired)
 end
 
+# Redeploy the telegraf deployment when the configmap or deployment changes
+#
+# @note
+#   This is necessary due to the symlinking used to push the telegraf config files
+#   into the correct paths.
+def redeploy(opts)
+  client = opts.k8s.to_api
+  patch = {
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            "kubectl.kubernetes.io/restartedAt" => Time.now.strftime('%Y-%m-%dT%H:%M:%S.%L%z')
+          }
+        }
+      }
+    }
+  }
+
+  client
+    .api('apps/v1')
+    .resource('deployments', namespace: opts[:k8s][:k8s_namespace])
+    .merge_patch(opts[:k8s][:k8s_deployment], patch)
+end
+
 # Parse options from the environment and CLI.
 #
 # TODO: refactor options handling to reduce the ABC complexity of this method.
@@ -272,8 +297,11 @@ def main(argv)
   all_hosts = FTC::ForemanHost.all(opts.foreman.to_api)
 
   formatter = opts.formatter.to_formatter
-  update_configmap(opts, formatter.format(all_hosts))
-  update_deployment_volume(opts)
+  should_redeploy = false
+  should_redeploy ||= update_configmap(opts, formatter.format(all_hosts))
+  should_redeploy ||= update_deployment_volume(opts)
+
+  redeploy(opts) if should_redeploy
 end
 
 if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
