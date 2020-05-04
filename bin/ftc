@@ -116,20 +116,27 @@ Options = Struct.new(:foreman, :k8s) do
     members.map { |member| self[member].debug = value }
   end
 
-  def formatter
-    @formatter ||= "ping"
+  attr_writer :formatter_name
+  def formatter_name
+    @formatter_name ||= "ping"
   end
 
-  attr_writer :formatter
+  def formatter_options=(str)
+    @formatter_options = JSON.parse(str, symbolize_names: true)
+  end
+
+  def formatter_options
+    @formatter_options ||= {}
+  end
 
   def to_formatter
-    case formatter
+    case formatter_name
     when "ping"
       FTC::Formatter::Ping.new
     when "dns_forward"
-      FTC::Formatter::DNSForward.new(servers: ['139.229.135.53'])
+      FTC::Formatter::DNSForward.new(**formatter_options)
     else
-      raise ArgumentError, "Unknown formatter type #{formatter}"
+      raise ArgumentError, "Unknown formatter type #{formatter_name}"
     end
   end
 end
@@ -232,8 +239,12 @@ def parse!(argv)
       opts.k8s[:k8s_volume] = value
     end
 
-    p.on("--formatter=FORMATTER", "The telegraf config formatter") do |value|
-      opts.formatter = value
+    p.on("--formatter-name=FORMATTER", "The telegraf config formatter") do |value|
+      opts.formatter_name = value
+    end
+
+    p.on("--formatter-options=FORMATTER", "The telegraf config formatter options") do |value|
+      opts.formatter_options = value
     end
   end
 
