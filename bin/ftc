@@ -24,8 +24,6 @@ end
 
 # Parse options from the environment and CLI.
 #
-# TODO: refactor options handling to reduce the ABC complexity of this method.
-#
 # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
 def parse!(argv)
   # Set default values from the environment
@@ -279,11 +277,12 @@ def update_deployment_volume(opts)
   item.sync(desired)
 end
 
-# Redeploy the telegraf deployment when the configmap or deployment changes
+# Redeploy the telegraf deployment when the configmap or deployment changes.
 #
 # @note
 #   This is necessary due to the symlinking used to push the telegraf config files
-#   into the correct paths.
+#   into the correct paths interfering with configmap changes triggering deployment
+#   restarts.
 def redeploy(opts)
   client = opts.k8s.to_api
   patch = {
