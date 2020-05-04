@@ -1,4 +1,3 @@
-
 namespace :docker do
   task :build do
     ftc_version = `git describe --tags`.chomp
