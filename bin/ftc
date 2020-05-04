@@ -160,17 +160,6 @@ Options = Struct.new(:foreman, :k8s, :formatter) do
   end
 end
 
-def sync_k8s_object(object, desired)
-  synced = object.insync?(desired)
-  puts "#{object.description} insync: #{synced}"
-  puts object.diff(desired) if !synced
-
-  if object.sync(desired)
-    puts "#{object.description}: sync performed"
-    puts "post-sync status: #{object.insync?(desired)}"
-  end
-end
-
 def update_configmap(opts, desired_conf)
   client = opts.k8s.to_api
   tcm = FTC::TelegrafConfigmap.new(client,
@@ -178,7 +167,7 @@ def update_configmap(opts, desired_conf)
                                    opts.k8s[:k8s_configmap],
                                    opts.k8s[:k8s_configmap_key])
 
-  sync_k8s_object(tcm, desired_conf)
+  tcm.sync(desired_conf)
 end
 
 def update_deployment_volume(opts)
@@ -194,7 +183,7 @@ def update_deployment_volume(opts)
     key: opts.k8s[:k8s_configmap_key],
     path: "telegraf.d/#{opts.k8s[:k8s_configmap_key]}"
   }
-  sync_k8s_object(item, desired)
+  item.sync(desired)
 end
 
 # Parse options from the environment and CLI.

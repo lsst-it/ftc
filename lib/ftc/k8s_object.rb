@@ -17,11 +17,14 @@ module FTC
     end
 
     # @return [Boolean] true if the sync was performed, false otherwise
-    def sync(desired)
+    def sync(desired, show_diff: true, noop: false)
       if insync?(desired)
+        puts "#{description}: insync"
         false
       else
-        sync!(desired)
+        puts diff(desired) if show_diff
+        sync!(desired) unless noop
+        puts "#{description}: sync performed"
         true
       end
     end
