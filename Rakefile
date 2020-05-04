@@ -12,4 +12,11 @@ namespace :docker do
         " -v #{homedir}/.kube:/root/.kube" \
         " --env-file=.env lsstit/ftc:dev"
   end
+
+  task :release do
+    ftc_version = `git describe --tags`.chomp
+    sh "docker tag lsstit/ftc:#{ftc_version} lsstit/ftc:latest"
+    sh "docker push lsstit/ftc:#{ftc_version}"
+    sh "docker push lsstit/ftc:latest"
+  end
 end
