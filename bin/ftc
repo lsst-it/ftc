@@ -215,7 +215,7 @@ FormatterOptions = Struct.new(
   def to_formatter
     case self[:formatter_name]
     when "ping"
-      FTC::Formatter::Ping.new
+      FTC::Formatter::Ping.new(**parsed_options)
     when "dns_forward"
       FTC::Formatter::DNSForward.new(**parsed_options)
     else
@@ -226,7 +226,11 @@ FormatterOptions = Struct.new(
   private
 
   def parsed_options
-    JSON.parse(self[:formatter_options], symbolize_names: true)
+    if self[:formatter_options].nil?
+      {}
+    else
+      JSON.parse(self[:formatter_options], symbolize_names: true)
+    end
   end
 end
 

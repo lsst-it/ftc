@@ -10,7 +10,7 @@ namespace :docker do
     sh "docker run -it --rm" \
         " -v #{workingdir}:/local " \
         " -v #{homedir}/.kube:/root/.kube" \
-        " --env-file=.env lsstit/ftc:dev"
+        " --env-file=#{workingdir}/.env lsstit/ftc:dev"
   end
 
   task :release do
