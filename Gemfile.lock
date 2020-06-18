@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    ftc (0.5.0)
+    ftc (0.6.0)
 
 GEM
   remote: https://rubygems.org/
