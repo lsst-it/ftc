@@ -78,10 +78,41 @@ FTC will automatically monitor Foreman host interfaces with the following proper
 
 ## Development
 
-### Docker
+Application development is performed by building and then running docker containers. Helper commands are provided with `rake`.
 
-```
-FTC_VERSION="x.y.z" # substitute with your version
+To build a container:
+
+```bash
 bundle exec rake docker:build
-docker push lsstit/ftc:"${FTC_VERSION}"
+```
+
+To run the application:
+
+```bash
+cat > .env <<-EOD
+FOREMAN_USERNAME=admin
+FOREMAN_PASSWORD=hunter2
+FOREMAN_URL=https://foreman.ls.lsst.org:443
+SSL_CA_FILE=/local/ca.crt
+
+K8S_CREDENTIALS=config
+K8S_CONTEXT=ruka
+K8S_NAMESPACE=it-telegraf-hosts
+K8S_CONFIGMAP=telegraf-ping
+K8S_CONFIGMAP_KEY=ping.conf
+K8S_DEPLOYMENT=telegraf-ping
+K8S_VOLUME=config
+
+FORMATTER_NAME=ping
+FORMATTER_OPTIONS={"exclude_fqdns": [".*-pxe\."]}
+EOD
+
+bundle exec rake docker:run # Uses environment settings from `.env`
+```
+
+To release an image:
+```
+git tag x.y.z # use your version here
+bundle exec rake docker:build docker:release
+git push --tags
 ```
