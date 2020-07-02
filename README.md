@@ -73,7 +73,7 @@ Ftc is in charge of scraping and modifying host information from Foreman and sho
 FTC will automatically monitor Foreman host interfaces with the following properties:
 
 1. The interface is managed by Foreman
-2. The interface has an IP address/MAC address (on the assumption that interfaces without)
+2. The interface has an IP address/MAC address (on the assumption that interfaces without either an IP address or MAC address is a virtual or unused interface)
 3. The interface has been assigned an FQDN
 
 ## Development
